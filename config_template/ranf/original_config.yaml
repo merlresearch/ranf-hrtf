@@ -1,0 +1,60 @@
+# Copyright (C) 2024 Mitsubishi Electric Research Laboratories (MERL)
+#
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
+dataset:
+  upsample:
+  train_subjects:
+  valid_subjects:
+  test_subjects:
+  features:
+  retrieval:
+  npool: 5
+  nretrieval: 5
+  azimuth_calibration: false
+  retrieval_priority: itdd
+device: cuda:0
+seed: 0
+persistent_workers: false
+learning:
+  num_epoch: 200
+  batch_size: 64
+  num_workers: 1
+  clip: 3.0
+  patience: 20
+adaptation:
+  num_epoch: 500
+  batch_size: 5
+  num_workers: 1
+  clip: 3.0
+model:
+  name: RANF
+  config:
+    hidden_features: 128
+    hidden_layers: 4
+    conv_layers: 4
+    spec_hidden_layers: 2
+    itd_hidden_layers: 2
+    scale: 1.0
+    dropout: 0.1
+    n_listeners: 200
+    rnn: LSTM
+    peft: lora
+    norm: LayerNorm
+    spec_res: false
+    itd_res: true
+    itd_skip_connection: true
+optimizer:
+  name: RAdam
+  config:
+    lr: 0.001
+scheduler:
+  name: ReduceLROnPlateau
+  config:
+    mode: min
+    factor: 0.9
+    patience: 10
+loss:
+  weight_itd: 1.0
+  eps: 1.0e-05
+  threshold_itd: 0.5

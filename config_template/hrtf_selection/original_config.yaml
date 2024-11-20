@@ -1,0 +1,15 @@
+# Copyright (C) 2024 Mitsubishi Electric Research Laboratories (MERL)
+#
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
+dataset:
+  upsample:
+  train_subjects:
+  valid_subjects:
+  test_subjects:
+  features:
+  retrieval:
+  azimuth_calibration: false
+  retrieval_priority: itdd
+device:
+seed: 0
