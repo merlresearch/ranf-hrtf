@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
-# Copyright (C) 2024 Mitsubishi Electric Research Laboratories (MERL)
+# Copyright (C) 2024-2025 Mitsubishi Electric Research Laboratories (MERL)
 #
 # SPDX-License-Identifier: AGPL-3.0-or-later
 
 original_path=$1
-sonicom_path=$2
+lap_challenge_path=$2
+sonicom_path=$3
 
 mkdir -p "${sonicom_path}/kemar"
 mkdir -p "${sonicom_path}/myhrtf"
@@ -24,4 +25,10 @@ for fname in $fnames; do
     else
         cp -n $fname "${sonicom_path}/subjects/${fbase}"
     fi
+done
+
+fnames=`find -L $lap_challenge_path -type f -name *_FreeFieldCompMinPhase_48kHz.sofa`
+for fname in $fnames; do
+    fbase=`basename "$fname"`
+    cp -n $fname "${sonicom_path}/subjects/${fbase}"
 done

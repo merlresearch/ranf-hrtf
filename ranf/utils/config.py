@@ -1,10 +1,13 @@
-# Copyright (C) 2024 Mitsubishi Electric Research Laboratories (MERL)
+# Copyright (C) 2024-2025 Mitsubishi Electric Research Laboratories (MERL)
 #
 # SPDX-License-Identifier: AGPL-3.0-or-later
 
 import numpy as np
 
+NUMSONICOMDIRECTIONS = 793
+
 FS = 48000
+
 FREQS = np.array(
     [
         0.0,

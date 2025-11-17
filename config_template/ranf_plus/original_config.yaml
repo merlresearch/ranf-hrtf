@@ -9,12 +9,13 @@ dataset:
   test_subjects:
   features:
   retrieval:
-  npool: 1  # not used
-  nretrieval: 1  # not used
+  npool: 30
+  nretrieval: 10
   azimuth_calibration: true
-  retrieval_priority: itdd  # not used
+  retrieval_priority: itdd
   signal:
-    concat_tgt_signal: false # not used
+    concat_tgt_signal: true
+    spvbap_path:
 device: cuda:0
 seed: 0
 persistent_workers: false
@@ -30,17 +31,23 @@ adaptation:
   num_workers: 1
   clip: 1.0
 model:
-  name: CbCNeuralField
+  name: RANF
   config:
-    hidden_features: 256
-    embed_features: 32
+    hidden_features: 128
     hidden_layers: 4
-    out_features: 258
+    conv_layers: 4
+    spec_hidden_layers: 2
+    itd_hidden_layers: 2
     scale: 1.0
     dropout: 0.1
     n_listeners: 213
-    activation: GELU
+    rnn: LSTM
+    peft: lora
+    norm: LayerNorm
+    spec_res: false
+    itd_res: true
     itd_skip_connection: true
+    azimuth_calibration: true
 optimizer:
   name: RAdam
   config:

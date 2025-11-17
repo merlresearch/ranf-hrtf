@@ -1,10 +1,10 @@
-# Copyright (C) 2024 Mitsubishi Electric Research Laboratories (MERL)
+# Copyright (C) 2024-2025 Mitsubishi Electric Research Laboratories (MERL)
 #
 # SPDX-License-Identifier: AGPL-3.0-or-later
 
 import argparse
 import logging
-import pathlib
+from pathlib import Path
 
 import numpy as np
 import torch
@@ -14,10 +14,10 @@ from omegaconf import OmegaConf
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-from ranf.utils import neural_field_icassp as neural_field
+from ranf.utils import neural_field_ojsp as neural_field
 from ranf.utils.loss_functions import ild_diff_loss, itd_diff_loss, lsd_loss
-from ranf.utils.sonicom_dataset_retrieval import SONICOMMulti
-from ranf.utils.util import count_parameters, db2linear, linear2db, seed_everything
+from ranf.utils.sonicom_dataset_retrieval import SONICOMMultiWithSP
+from ranf.utils.util import count_parameters, db2linear, linear2db, seed_everything, torch_reproducible
 
 
 def freeze_model_for_peft(model):
@@ -65,10 +65,9 @@ def freeze_model_for_peft(model):
 
 
 def forward(data, model, config):
-    tgt_spec, tgt_ild, tgt_itd, tgt_loc, ret_specs, ret_itds, _, tgt_sidx, ret_sidxs = data
-
-    spec_db, ret_specs_db = linear2db(tgt_spec), linear2db(ret_specs)
-    pred_db, pred_itd = model(ret_specs_db, ret_itds, tgt_loc, tgt_sidx, ret_sidxs)
+    tgt_spec, tgt_itd, tgt_loc, input_specs, input_itds, input_locs, tgt_sidx, ret_sidxs = data
+    spec_db, input_specs_db = linear2db(tgt_spec), linear2db(input_specs)
+    pred_db, pred_itd = model(input_specs_db, input_itds, input_locs, tgt_loc, tgt_sidx, ret_sidxs)
     pred = db2linear(pred_db)
 
     if model.training:
@@ -82,9 +81,9 @@ def forward(data, model, config):
     if model.training:
         return loss_val
 
-    # These metrcis are only for validation
+    # These metrics are only for validation
     lsd_loss_val = torch.mean(lsd_loss(spec_db, pred_db, use_index=True))
-    ild_diff_loss_val = torch.mean(ild_diff_loss(tgt_spec, pred, tgt_ild))
+    ild_diff_loss_val = torch.mean(ild_diff_loss(tgt_spec, pred))
     return loss_val, lsd_loss_val, ild_diff_loss_val, itd_diff_loss_val
 
 
@@ -93,9 +92,10 @@ def main():
     parser.add_argument("config_path", type=str)
     args = parser.parse_args()
 
-    path = pathlib.Path(args.config_path)
+    path = Path(args.config_path)
     config = OmegaConf.load(path.joinpath("config.yaml"))
     seed_everything(config.seed)
+    torch_reproducible()
 
     log = path.joinpath("log")
     log.mkdir(parents=True, exist_ok=True)
@@ -104,12 +104,12 @@ def main():
     logging.basicConfig(filename=log_name, level=logging.INFO)
 
     # Prepare dataset and dataloader
-    tr_dataset = SONICOMMulti(
+    tr_dataset = SONICOMMultiWithSP(
         config.dataset,
         stage="adaptation",
         mode="train",
     )
-    dev_dataset = SONICOMMulti(
+    dev_dataset = SONICOMMultiWithSP(
         config.dataset,
         stage="adaptation",
         mode="valid",
@@ -141,10 +141,10 @@ def main():
     # Freezing the model except for the subject-specific parameters
     freeze_model_for_peft(model)
 
-    # Prepare the optimizer and scheduler
+    # Prepare optimizer
     optimizer = getattr(optim, config.optimizer.name)(model.parameters(), **config.optimizer.config)
 
-    tr_loss, tr_loss_min = [], 1.0e15
+    tr_loss, tr_loss_min, dev_metrics = [], 1.0e15, 10e15
     logging.info("Start adaptation...")
     for epoch in range(config.adaptation.num_epoch):
 
@@ -180,11 +180,20 @@ def main():
 
         if tr_loss[-1] <= tr_loss_min:
             tr_loss_min = tr_loss[-1]
+            torch.save(model.state_dict(), path.joinpath("adaptation_loss.ckpt"))
+            logging.info(f"Best loss: {epoch}")
+
+        if np.mean(running_lsd) + np.mean(running_ild_diff) + np.mean(running_itd_diff) <= dev_metrics:
             torch.save(model.state_dict(), path.joinpath("adaptation.ckpt"))
+            dev_metrics = np.mean(running_lsd) + np.mean(running_ild_diff) + np.mean(running_itd_diff)
+            logging.info(f"Best metrics: {epoch}")
 
         if np.isnan(tr_loss[-1]):
-            logging.info("Loss is Nan. Training is stopped")
+            logging.info("Loss is NaN. Training is stopped")
             break
+
+        if (epoch + 1) % 100 == 0:
+            torch.save(model.state_dict(), path.joinpath(f"adaptation_{epoch:03}.ckpt"))
 
 
 if __name__ == "__main__":

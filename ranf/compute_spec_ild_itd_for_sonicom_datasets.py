@@ -1,4 +1,4 @@
-# Copyright (C) 2024 Mitsubishi Electric Research Laboratories (MERL)
+# Copyright (C) 2024-2025 Mitsubishi Electric Research Laboratories (MERL)
 #
 # SPDX-License-Identifier: AGPL-3.0-or-later
 
@@ -8,6 +8,7 @@ from pathlib import Path
 import numpy as np
 from tqdm import tqdm
 
+from ranf.utils.config import NUMSONICOMDIRECTIONS
 from ranf.utils.util import extract_features
 
 
@@ -15,6 +16,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("input_path", type=str)
     parser.add_argument("output_path", type=str)
+    parser.add_argument("--upsample", type=int, default=3)
     parser.add_argument("--calibrate_itdoffset", action="store_true")
     args = parser.parse_args()
 
@@ -27,13 +29,35 @@ def main():
         spec, ild, itd, loc = extract_features(path)
 
         assert int(path.stem.split("_")[0][1:]) - 1 == idx, (idx, path)
-        assert len(itd) == 793, "HRTF should follow the SONICOM spatial grid"
+        assert len(itd) == NUMSONICOMDIRECTIONS, "HRTF should follow the SONICOM spatial grid"
 
         if args.calibrate_itdoffset:
-            # 4 and 414 correspond to the front and left, respectively.
-            alpha = (itd[414] - itd[4]) / (loc[414, 0] - loc[4, 0])
-            beta = itd[4] / alpha
-            loc[:, 0] = (loc[:, 0] + beta + 360) % 360
+            # NOTE: The following lines are for the training and validation sets.
+            if idx < 200:
+                alpha = (itd[414] - itd[4]) / (loc[414, 0] - loc[4, 0])
+                beta = itd[4] / alpha
+                loc[:, 0] = (loc[:, 0] + beta + 360) % 360
+
+            # NOTE: The available directions depend on the sparsity level on the challenge test set.
+            else:
+                if args.upsample == 3:
+                    alpha = (itd[414] - itd[4]) / (loc[414, 0] - loc[4, 0])
+                    beta = itd[4] / alpha
+                    loc[:, 0] = (loc[:, 0] + beta + 360) % 360
+                elif args.upsample == 5:
+                    alpha = (itd[612] - itd[203]) / 90
+                    beta = itd[4] / alpha
+                    loc[:, 0] = (loc[:, 0] + beta + 360) % 360
+                elif args.upsample == 19:
+                    alpha = (itd[269] - itd[546]) / 120
+                    beta = itd[4] / alpha
+                    loc[:, 0] = (loc[:, 0] + beta + 360) % 360
+                elif args.upsample == 100:
+                    alpha = (itd[436] - itd[788]) / 80
+                    beta = (itd[788] - alpha * 5.0) / alpha
+                    loc[:, 0] = (loc[:, 0] + beta + 360) % 360
+                else:
+                    raise ValueError
 
         specs.append(spec.astype(np.float32))
         ilds.append(ild.astype(np.float32))

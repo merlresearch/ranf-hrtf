@@ -1,11 +1,11 @@
-# Copyright (C) 2024 Mitsubishi Electric Research Laboratories (MERL)
+# Copyright (C) 2024-2025 Mitsubishi Electric Research Laboratories (MERL)
 #
 # SPDX-License-Identifier: AGPL-3.0-or-later
 
 import pytest
 import torch
 
-from ranf.utils.neural_field_icassp import RANF, CbCNeuralField, PEFTNeuralField
+from ranf.utils.neural_field_ojsp import RANF, CbCNeuralField, PEFTNeuralField
 
 
 @pytest.mark.parametrize("batch_size", [1, 5])
@@ -46,13 +46,14 @@ def test_peft_neural_field(
 
     model.train()
 
-    ret_specs_db = None
-    ret_itds = None
+    input_specs_db = None
+    input_itds = None
+    input_locs = None
     ret_sidxs = None
     tgt_loc = torch.rand(batch_size, 2)
     tgt_sidx = torch.randint(low=0, high=n_listeners, size=(batch_size,))
 
-    mag, itd = model(ret_specs_db, ret_itds, tgt_loc, tgt_sidx, ret_sidxs)
+    mag, itd = model(input_specs_db, input_itds, input_locs, tgt_loc, tgt_sidx, ret_sidxs)
     assert list(mag.shape) == [batch_size, 2, f_nyquist]
     assert list(itd.shape) == [batch_size, 1]
 
@@ -92,13 +93,15 @@ def test_cbc_neural_field(
 
     model.train()
 
-    ret_specs_db = None
-    ret_itds = None
+    input_specs_db = None
+    input_itds = None
+    input_locs = None
     ret_sidxs = None
     tgt_loc = torch.rand(batch_size, 2)
     tgt_sidx = torch.randint(low=0, high=n_listeners, size=(batch_size,))
 
-    mag, itd = model(ret_specs_db, ret_itds, tgt_loc, tgt_sidx, ret_sidxs)
+    mag, itd = model(input_specs_db, input_itds, input_locs, tgt_loc, tgt_sidx, ret_sidxs)
+
     assert list(mag.shape) == [batch_size, 2, f_nyquist]
     assert list(itd.shape) == [batch_size, 1]
 
@@ -164,12 +167,13 @@ def test_ranf(
 
     model.train()
 
-    ret_specs_db = torch.rand(batch_size, n_retrievals, 2, f_nyquist)
-    ret_itds = torch.rand(batch_size, n_retrievals)
+    input_specs_db = torch.rand(batch_size, n_retrievals, 2, f_nyquist)
+    input_itds = torch.rand(batch_size, n_retrievals, 1)
+    input_locs = torch.rand(batch_size, n_retrievals, 2)
     ret_sidxs = torch.randint(low=0, high=n_listeners, size=(batch_size, n_retrievals))
     tgt_loc = torch.rand(batch_size, 2)
     tgt_sidx = torch.randint(low=0, high=n_listeners, size=(batch_size,))
 
-    mag, itd = model(ret_specs_db, ret_itds, tgt_loc, tgt_sidx, ret_sidxs)
+    mag, itd = model(input_specs_db, input_itds, input_locs, tgt_loc, tgt_sidx, ret_sidxs)
     assert list(mag.shape) == [batch_size, 2, f_nyquist]
     assert list(itd.shape) == [batch_size, 1]

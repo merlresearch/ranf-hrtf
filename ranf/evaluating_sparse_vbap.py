@@ -7,25 +7,44 @@ import logging
 import os
 from pathlib import Path
 
+import cvxpy as cp
 import numpy as np
 import sofar as sf
 from omegaconf import OmegaConf
+from scipy.fft import fft
+from spatialaudiometrics import hrtf_metrics as hf
 from spatialaudiometrics import lap_challenge as lap
 from spatialaudiometrics import load_data as ld
 
-from ranf.utils.config import NUMSONICOMDIRECTIONS, TGTDIDXS003, TGTDIDXS005, TGTDIDXS019, TGTDIDXS100
-from ranf.utils.util import seed_everything, to_cartesian
+from ranf.utils.reconstruction import hrtf2hrir_minph
+from ranf.utils.util import load_seen_unseen_didxs, seed_everything, to_cartesian
 
 
 def load_hrtf(fname):
     hrtf = ld.HRTF(fname)
-    return hrtf.hrir, hrtf.locs
+    specs = np.abs(fft(hrtf.hrir, axis=-1))[..., : hrtf.hrir.shape[-1] // 2 + 1]
+    _, itds, _ = hf.itd_estimator_maxiacce(hrtf.hrir, hrtf.fs)
+    itds = np.array(itds)
+    locs = np.deg2rad(hrtf.locs) - np.pi
+    return hrtf.hrir, specs, itds, locs, hrtf.locs
 
 
-def search_nn(loc, measured_locs):
-    dist = np.linalg.norm(measured_locs - loc[None, :], axis=-1)
-    best_idx = np.argsort(dist)[0]
-    return best_idx
+def sparse_vbap(loc, measured_locs, normalize=True):
+    c = np.ones(measured_locs.shape[0])
+    b = np.zeros_like(c)
+    ref_mat = to_cartesian(measured_locs).T
+    loc = to_cartesian(loc)
+
+    gain = cp.Variable(measured_locs.shape[0])
+    prob = cp.Problem(cp.Minimize(c.T @ gain), [ref_mat @ gain == loc, gain >= b])
+    prob.solve()
+
+    assert gain.value is not None, "No feasible solution"
+    gain = np.maximum(gain.value, 0)
+
+    if normalize:
+        gain = gain / np.sum(gain)
+    return gain
 
 
 def main():
@@ -39,22 +58,7 @@ def main():
 
     seed_everything(config.seed)
 
-    if config.dataset.upsample == 3:
-        seen_didxs = TGTDIDXS003
-
-    elif config.dataset.upsample == 5:
-        seen_didxs = TGTDIDXS005
-
-    elif config.dataset.upsample == 19:
-        seen_didxs = TGTDIDXS019
-
-    elif config.dataset.upsample == 100:
-        seen_didxs = TGTDIDXS100
-
-    else:
-        raise ValueError(f"dataset.upsample should be in (3, 5, 19, 100) but is {config.dataset.upsample}.")
-
-    unseen_didxs = sorted(list(set(range(NUMSONICOMDIRECTIONS)) - set(seen_didxs)))
+    seen_didxs, unseen_didxs = load_seen_unseen_didxs(config.dataset.upsample)
 
     eval_path = path.joinpath("log").joinpath("eval")
     eval_path.mkdir(parents=True, exist_ok=True)
@@ -65,15 +69,22 @@ def main():
     hrtf_type = "FreeFieldCompMinPhase_48kHz"
     for sidx in config.dataset.test_subjects:
         fname = sonicom_path.joinpath(f"P{sidx+1:04}_{hrtf_type}.sofa")
-        hrir, locs_deg = load_hrtf(fname)
+        hrir, specs, itds, locs, locs_deg = load_hrtf(fname)
 
-        locs_cart = to_cartesian(np.deg2rad(locs_deg))
-        pred_hrir = np.zeros_like(hrir[unseen_didxs, :])
+        measured_specs = specs[seen_didxs, ...]
+        measured_itds = itds[seen_didxs]
+        measured_locs = locs[seen_didxs, :]
+
+        pred_mag, pred_itd = np.zeros_like(specs[unseen_didxs, :]), np.zeros_like(itds[unseen_didxs])
         for idx, didx in enumerate(unseen_didxs):
-            best_idx = search_nn(locs_cart[didx, :], locs_cart[seen_didxs, :])
-            pred_hrir[idx, :] = hrir[seen_didxs[best_idx], :]
+            gain = sparse_vbap(locs[didx, :], measured_locs, normalize=True)
+            pred_mag[idx, ...] = np.sum(gain[:, None, None] * measured_specs, axis=0)
+
+            gain = sparse_vbap(locs[didx, :], measured_locs, normalize=False)
+            pred_itd[idx] = np.sum(gain * measured_itds, axis=0)
 
         sofa_file = sf.read_sofa(fname)
+        pred_hrir = hrtf2hrir_minph(pred_mag, itd=np.expand_dims(pred_itd, -1), nfft=sofa_file.Data_IR.shape[-1])
 
         target_path = eval_path.joinpath(f"target_p{sidx+1:04}.sofa")
         sf.write_sofa(target_path, sofa_file)
@@ -81,6 +92,7 @@ def main():
         pred_path = eval_path.joinpath(f"pred_p{sidx+1:04}.sofa")
 
         sofa_file.Data_IR[unseen_didxs, ...] = pred_hrir.astype(np.float64)
+
         sf.write_sofa(pred_path, sofa_file)
 
         metrics = lap.calculate_task_two_metrics(str(target_path), str(pred_path))[0]

@@ -1,4 +1,4 @@
-# Copyright (C) 2024 Mitsubishi Electric Research Laboratories (MERL)
+# Copyright (C) 2024-2025 Mitsubishi Electric Research Laboratories (MERL)
 #
 # SPDX-License-Identifier: AGPL-3.0-or-later
 
@@ -12,6 +12,8 @@ from scipy.fft import fft
 from spatialaudiometrics import hrtf_metrics as hf
 from spatialaudiometrics import load_data as ld
 
+from ranf.utils.config import TGTDIDXS003, TGTDIDXS005, TGTDIDXS019, TGTDIDXS100
+
 
 def seed_everything(seed):
     random.seed(seed)
@@ -19,6 +21,33 @@ def seed_everything(seed):
     np.random.seed(seed)
     torch.manual_seed(seed)
     torch.cuda.manual_seed(seed)
+
+
+def torch_reproducible(cuda=True):
+    if cuda:
+        assert torch.cuda.is_available()
+        assert torch.backends.cudnn.enabled
+        torch.backends.cudnn.benchmark = False
+        torch.backends.cudnn.deterministic = True
+
+
+def load_seen_unseen_didxs(upsample, num_sonisom_directions=793):
+    if upsample == 3:
+        seen_didxs = TGTDIDXS003
+
+    elif upsample == 5:
+        seen_didxs = TGTDIDXS005
+
+    elif upsample == 19:
+        seen_didxs = TGTDIDXS019
+
+    elif upsample == 100:
+        seen_didxs = TGTDIDXS100
+    else:
+        raise ValueError(f"`upsample` should be in (3, 5, 19, 100) but is {upsample}.")
+
+    unseen_didxs = sorted(list(set(range(num_sonisom_directions)) - set(seen_didxs)))
+    return seen_didxs, unseen_didxs
 
 
 def linear2db(spec, eps=1.0e-5):

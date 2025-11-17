@@ -1,4 +1,4 @@
-# Copyright (C) 2024 Mitsubishi Electric Research Laboratories (MERL)
+# Copyright (C) 2024-2025 Mitsubishi Electric Research Laboratories (MERL)
 #
 # SPDX-License-Identifier: AGPL-3.0-or-later
 
@@ -214,7 +214,7 @@ class PEFTNeuralField(nn.Module):
             self.embed_layer_lorau = nn.ModuleList(lorau)
             self.embed_layer_lorav = nn.ModuleList(lorav)
 
-    def forward(self, ret_specs_db, ret_itds, tgt_loc, tgt_sidx, ret_sidxs):
+    def forward(self, ret_specs_db, ret_itds, ret_locs, tgt_loc, tgt_sidx, ret_sidxs):
         """Forward
 
         Args:
@@ -315,7 +315,7 @@ class CbCNeuralField(nn.Module):
             MLP(hidden_features, hidden_features // 2, dropout), MLP(hidden_features // 2, 1, activation="Identity")
         )
 
-    def forward(self, ret_specs_db, ret_itds, tgt_loc, tgt_sidx, ret_sidxs):
+    def forward(self, ret_specs_db, ret_itds, ret_locs, tgt_loc, tgt_sidx, ret_sidxs):
         """Forward
 
         Args:
@@ -377,14 +377,16 @@ class RANF(nn.Module):
         itd_res=False,
         itd_activation="Identity",
         itd_skip_connection=True,
+        azimuth_calibration=False,
         **kwargs,
     ):
         super().__init__()
 
         assert hidden_features % 2 == 0
+        assert conv_in % 2 == 0 and conv_in > 1
         assert conv_layers > 2
         assert peft == "lora", "Our current implementation supports only LoRA"
-        assert lora_rank == 1, "Our current implementation supports the rank-1 case of LoRA"
+        assert lora_rank == 1, "Our current implementation supports only the rank-1 case of LoRA"
 
         self.hidden_layers = hidden_layers
         self.spec_hidden_layers = spec_hidden_layers
@@ -394,15 +396,19 @@ class RANF(nn.Module):
         self.spec_res = spec_res
         self.itd_res = itd_res
         self.itd_skip_connection = itd_skip_connection
+        self.conv_in = conv_in
+        self.azimuth_calibration = azimuth_calibration
 
         # For random Fourier feature
         self.itd_scale = itd_scale
         self.rng = np.random.default_rng(0)
 
+        loc_emb_in = 4 if emb_in == 3 else 6
+        if azimuth_calibration:
+            emb_in += 2
         bmat = scale * self.rng.normal(0.0, 1.0, (hidden_features // 2, emb_in * 2))
         self.bmat = torch.nn.Parameter(torch.tensor(bmat.astype(np.float32)), requires_grad=False)
-
-        loc_bmat = scale * self.rng.normal(0.0, 1.0, (hidden_features // 2, 4))
+        loc_bmat = scale * self.rng.normal(0.0, 1.0, (hidden_features // 2, loc_emb_in))
         self.loc_bmat = torch.nn.Parameter(torch.tensor(loc_bmat.astype(np.float32)), requires_grad=False)
 
         self.emb_mlp = MLP(hidden_features, hidden_features * 2, dropout, activation=activation)
@@ -438,7 +444,6 @@ class RANF(nn.Module):
             ]
         layer += [
             nn.ConvTranspose1d(hidden_features // 2, 2, 3, stride=1, padding=1),
-            nn.PReLU(),
         ]
         self.spec_dec = nn.Sequential(*layer)
 
@@ -508,33 +513,24 @@ class RANF(nn.Module):
             v = torch.stack(b.split(self.hidden_features, -1), -1)
         return u, v
 
-    def forward(self, ret_specs_db, ret_itds, tgt_loc, tgt_sidx, ret_sidxs):
-        """Forward
-
-        Args:
-            ret_specs_db (torch.Tensor): Retrieved log magnitude spectra in [batch, K, 2, nfreqs]
-            ret_itds (torch.Tensor): Retrieved log magnitude spectra in [batch, K]
-            tgt_loc (torch.Tensor): Sound source location (azimuth, elevation, distance) in [batch, 3]
-            tgt_sidx (torch.Tensor): Indices of the target subject in integer
-            ret_sidxs (torch.Tensor): Indices of the retrieved subject
-
-        Returns:
-            estimate (torch.Tensor): Estimated magnitude in [batch, 2, nfreqs]
-            itd (torch.Tensor): Estimated ITD in [batch, 1]
-        """
+    def forward(self, ret_specs_db, ret_itds, ret_locs, tgt_loc, tgt_sidx, ret_sidxs):
         batch, nretrieval, nch, _ = ret_specs_db.shape
 
-        tgt_onehot = F.one_hot(tgt_sidx[:, None], self.n_listeners)
+        tgt_onehot = F.one_hot(tgt_sidx.unsqueeze(-1), self.n_listeners)
         tgt_onehot = tgt_onehot.tile(1, nretrieval, 1).type(torch.float32)
         ret_onehot = F.one_hot(ret_sidxs, self.n_listeners).type(torch.float32)
 
-        tgt_azimuth = tgt_loc[:, :1].tile(1, nretrieval)
-        tgt_elevation = tgt_loc[:, 1:2].tile(1, nretrieval)
+        tgt_azimuth = tgt_loc[:, 0, None].tile(1, nretrieval)  # (Batch, 3) -> (Batch, K)
+        tgt_elevation = tgt_loc[:, 1, None].tile(1, nretrieval)
         ret_itds_scaled = self.itd_scale * ret_itds
 
-        emb = torch.stack([tgt_azimuth, tgt_elevation, ret_itds_scaled], -1)
-        ave_itd = torch.mean(ret_itds, 1)[:, None]
-        ave_spec = torch.mean(ret_specs_db, 1)
+        emb = torch.concatenate([tgt_azimuth.unsqueeze(-1), tgt_elevation.unsqueeze(-1), ret_itds_scaled], -1)
+
+        if self.azimuth_calibration:
+            emb = torch.concatenate([emb, ret_locs[..., 0, None], ret_locs[..., 1, None]], -1)
+
+        ave_itd = torch.mean(ret_itds[:, :, :1], 1)
+        ave_spec = torch.mean(ret_specs_db[:, :, :2, :], 1)
 
         emb = torch.cat([emb.sin(), emb.cos()], -1)
         emb = torch.einsum("bkn,mn->bkm", emb, self.bmat)
@@ -571,11 +567,18 @@ class RANF(nn.Module):
             u, v = self._compute_uv(tgt_onehot[:, :1, :], None, m, "target")
             x_itd = self.itd_hidden_blocks[n](x_itd, u=u, v=v)
 
-        # Location-related RFF without retrieved ITDs
         if self.itd_skip_connection:
-            locs = [tgt_loc[:, 0].sin(), tgt_loc[:, 0].cos(), tgt_loc[:, 1].sin(), tgt_loc[:, 1].cos()]
-            loc_emb = torch.stack(locs, -1) @ self.loc_bmat.T
-            loc_emb = torch.concatenate([loc_emb.sin(), loc_emb.cos()], axis=-1)
+            if self.conv_in == 2:
+                locs = [tgt_loc[:, 0].sin(), tgt_loc[:, 0].cos(), tgt_loc[:, 1].sin(), tgt_loc[:, 1].cos()]
+                loc_emb = torch.stack(locs, -1) @ self.loc_bmat.T
+                loc_emb = torch.concatenate([loc_emb.sin(), loc_emb.cos()], axis=-1)
+            else:
+                loc_emb = torch.concatenate(
+                    [tgt_azimuth[:, 0].unsqueeze(-1), tgt_elevation[:, 0].unsqueeze(-1), ret_itds_scaled[:, 0, -1:]], -1
+                )
+                loc_emb = torch.cat([loc_emb.sin(), loc_emb.cos()], -1) @ self.loc_bmat.T
+                loc_emb = torch.concatenate([loc_emb.sin(), loc_emb.cos()], axis=-1)
+
             x_itd = x_itd[:, 0, :] + loc_emb
         else:
             x_itd = x_itd[:, 0, :]

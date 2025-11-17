@@ -1,4 +1,4 @@
-# Copyright (C) 2024 Mitsubishi Electric Research Laboratories (MERL)
+# Copyright (C) 2024-2025 Mitsubishi Electric Research Laboratories (MERL)
 #
 # SPDX-License-Identifier: AGPL-3.0-or-later
 
@@ -9,10 +9,12 @@ dataset:
   test_subjects:
   features:
   retrieval:
-  npool: 5
-  nretrieval: 5
-  azimuth_calibration: false
+  npool: 30
+  nretrieval: 10
+  azimuth_calibration: true
   retrieval_priority: itdd
+  signal:
+    concat_tgt_signal: false
 device: cuda:0
 seed: 0
 persistent_workers: false
@@ -20,13 +22,13 @@ learning:
   num_epoch: 200
   batch_size: 64
   num_workers: 1
-  clip: 3.0
+  clip: 10.0
   patience: 20
 adaptation:
-  num_epoch: 500
-  batch_size: 5
+  num_epoch: 1000
+  batch_size: 3
   num_workers: 1
-  clip: 3.0
+  clip: 1.0
 model:
   name: RANF
   config:
@@ -37,13 +39,14 @@ model:
     itd_hidden_layers: 2
     scale: 1.0
     dropout: 0.1
-    n_listeners: 200
+    n_listeners: 213
     rnn: LSTM
     peft: lora
     norm: LayerNorm
     spec_res: false
     itd_res: true
     itd_skip_connection: true
+    azimuth_calibration: true
 optimizer:
   name: RAdam
   config:
